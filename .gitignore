@@ -9,6 +9,15 @@ wheels/
 # Virtual environments
 .venv
 
-
 # Data
 data/
+
+# Secrets
+.env
+
+# Media / temp files
+*.wav
+*.mp4
+*.m4a
+.DS_Store
+
