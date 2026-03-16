@@ -14,6 +14,8 @@ import torch
 import whisperx
 from dotenv import load_dotenv
 from whisperx.diarize import DiarizationPipeline
+from datetime import timedelta
+from datetime import timedelta
 
 # ---------------------------------------------------------------------------
 # PyTorch 2.6+ changed torch.load to default to weights_only=True, which
@@ -36,12 +38,25 @@ def extract_audio(video_path: str) -> str:
     command = [
         "ffmpeg", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le",
+    #    "-af", "highpass=f=80, afftdn=nr=12:nf=-50:tn=1, loudnorm",
         "-ar", "44100", "-ac", "2",
         audio_path, "-y"
     ]
     subprocess.run(command, check=True)
     return audio_path
 
+# def ffmpef_clean_audio(input_path: str, output_path: str):
+#     """Clean audio using ffmpeg filters."""
+#     command = [
+#         "ffmpeg", "-y", "-i" input_path,
+#         "-af", "highpass=f=80, afftdn=nr=12:nf-50:tn=1, loudnorm",
+#         "-ac", "1", "-ar", "16000",
+#         output_path, "-y"
+#     ]
+#     subprocess.run(command, check=True)
+
+
+    
 def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
     """
     Run the full WhisperX pipeline:
@@ -87,6 +102,18 @@ def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
     return result["segments"]
 
 
+def format_timestamp(seconds: float) -> str:
+    """Format seconds as HH:MM:SS.mmm"""
+    try:
+        seconds = float(seconds or 0.0)
+    except Exception:
+        seconds = 0.0
+    total_seconds = int(seconds)
+    ms = int((seconds - total_seconds) * 1000)
+    td = timedelta(seconds=total_seconds)
+    return f"{str(td)}.{ms:03d}"
+
+
 def main():
     load_dotenv(override=True)
 
@@ -96,15 +123,17 @@ def main():
         print("Create a .env file with: HF_TOKEN=your_token_here")
         return
 
-    video_path = "videoplayback.mp4"
+    video_path = "data/M.AE2S5Q.02.12.25.webm"
     audio_path = extract_audio(video_path)
-    segments = transcribe_and_diarize(audio_path, hf_token)
+    # segments = transcribe_and_diarize(audio_path, hf_token)
 
-    print("\n--- Transcription ---\n")
-    for seg in segments:
-        speaker = seg.get("speaker", "UNKNOWN")
-        text = seg.get("text", "").strip()
-        print(f"[{speaker}]: {text}")
+    # print("\n--- Transcription ---\n")
+    # for seg in segments:
+    #     speaker = seg.get("speaker", "UNKNOWN")
+    #     text = seg.get("text", "").strip()
+    #     start = seg.get("start", seg.get("start_time", 0.0))
+    #     ts = format_timestamp(start)
+    #     print(f"[{ts}] [{speaker}]: {text}")
 
 
 if __name__ == "__main__":
