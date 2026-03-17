@@ -17,6 +17,8 @@ from whisperx.diarize import DiarizationPipeline
 from datetime import timedelta
 from datetime import timedelta
 
+import csv
+
 # ---------------------------------------------------------------------------
 # PyTorch 2.6+ changed torch.load to default to weights_only=True, which
 # breaks loading older PyAnnote model checkpoints. We patch torch.load to
@@ -71,7 +73,7 @@ def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
 
     # --- Step 1: Transcribe ---
     print("1. Transcribing audio...")
-    model = whisperx.load_model("turbo", device, compute_type=compute_type)
+    model = whisperx.load_model("large-v2", device, compute_type=compute_type)
     audio = whisperx.load_audio(audio_path)
     result = model.transcribe(audio, batch_size=batch_size)
 
@@ -94,7 +96,7 @@ def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
     diarize_model = DiarizationPipeline(
         use_auth_token=hf_token, device=device
     )
-    diarize_segments = diarize_model(audio)
+    diarize_segments = diarize_model(audio, min_speakers = 1, max_speakers = 2)
 
     # --- Step 4: Assign speakers to segments ---
     result = whisperx.assign_word_speakers(diarize_segments, result)
@@ -114,6 +116,35 @@ def format_timestamp(seconds: float) -> str:
     return f"{str(td)}.{ms:03d}"
 
 
+def print_output(segment):
+    for seg in segments:
+        speaker = seg.get("speaker", "UNKNOWN")
+        text = seg.get("text", "").strip()
+        start = seg.get("start", seg.get("start_time", 0.0))
+        ts = format_timestamp(start)
+        print(f"[{ts}] [{speaker}]: {text}")
+
+def save_into_csv(segments, output_file):
+    with open(output_file, 'w', newline='') as csvfile:
+        fieldnames = ['start_time', 'end_time', 'speaker', 'text']
+        writer = csv.DictWriter(csvfile, fieldnames = fieldnames)
+
+        writer.writeheader()
+
+        for seg in segments:
+            speaker = seg.get("speaker", "UNKNOWN")
+            text = seg.get("text", "").strip()
+            start = seg.get("start", seg.get("start_time", 0.0))
+            end = seg.get("end", seg.get("end_time", 0.0))
+            stf = format_timestamp(start)
+            endf = format_timestamp(end)
+            print(f"[{stf}] [{endf}] [{speaker}]: {text}")
+            writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text})
+            
+
+
+
+
 def main():
     load_dotenv(override=True)
 
@@ -123,17 +154,14 @@ def main():
         print("Create a .env file with: HF_TOKEN=your_token_here")
         return
 
-    video_path = "data/M.AE2S5Q.02.12.25.webm"
+    video_path = "videosample1.webm"
     audio_path = extract_audio(video_path)
-    # segments = transcribe_and_diarize(audio_path, hf_token)
+    segments = transcribe_and_diarize(audio_path, hf_token)
 
-    # print("\n--- Transcription ---\n")
-    # for seg in segments:
-    #     speaker = seg.get("speaker", "UNKNOWN")
-    #     text = seg.get("text", "").strip()
-    #     start = seg.get("start", seg.get("start_time", 0.0))
-    #     ts = format_timestamp(start)
-    #     print(f"[{ts}] [{speaker}]: {text}")
+    print("\n--- Transcription ---\n")
+    file_name = os.path.splitext(video_path)[0] + "_transcript.csv"
+    save_into_csv(segments, 'output.csv')
+
 
 
 if __name__ == "__main__":

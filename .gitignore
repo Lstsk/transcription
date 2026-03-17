@@ -19,5 +19,8 @@ data/
 *.wav
 *.mp4
 *.m4a
+*.txt
+*.webm
+*.csv
 .DS_Store
 
