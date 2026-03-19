@@ -5,8 +5,10 @@ Extracts audio from video files and produces speaker-labeled transcripts
 using WhisperX (Whisper + PyAnnote). All processing runs locally.
 """
 
+from typing import List, Dict
 import os
 import gc
+from pathlib import Path
 import subprocess
 import warnings
 
@@ -18,6 +20,12 @@ from datetime import timedelta
 from datetime import timedelta
 
 import csv
+
+# ---------------------------------------------------------------------------
+# Constants 
+# ---------------------------------------------------------------------------
+DATA_ROOT = "data"
+
 
 # ---------------------------------------------------------------------------
 # PyTorch 2.6+ changed torch.load to default to weights_only=True, which
@@ -34,31 +42,58 @@ def _patched_torch_load(*args, **kwargs):
 torch.load = _patched_torch_load
 
 
+
+# ---------------------------------------------------------------------------
+# Utility functions for batch processing
+# ---------------------------------------------------------------------------
+def find_webm_files(base_dir: str) -> List[Path]:    
+    base = Path(base_dir)
+    return list(base.rglob("*.webm"))
+
+
+def ensure_dir(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def extract_audio_to_temp(webm_path: Path, temp_root: str = "data/temp", out_format: str = "wav") -> Path:
+    webm_path = Path(webm_path)
+    temp_dir = Path(temp_root)
+    ensure_dir(temp_dir)
+    out_name = webm_path.stem + "." + out_format
+    out_path = temp_dir / out_name
+
+    cmd = [
+        "ffmpeg",
+        "-y",
+        "-i",
+        str(webm_path),
+        "-ar",
+        "16000",
+        "-ac",
+        "1",
+        str(out_path),
+    ]
+    subprocess.run(cmd, check=True)
+    return out_path
+
 def extract_audio(video_path: str) -> str:
     """Extract audio from a video file using ffmpeg and save as WAV."""
     audio_path = os.path.splitext(video_path)[0] + ".wav"
     command = [
         "ffmpeg", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le",
-    #    "-af", "highpass=f=80, afftdn=nr=12:nf=-50:tn=1, loudnorm",
-        "-ar", "44100", "-ac", "2",
+        "-af", "highpass=f=80, afftdn=nr=12:nf=-50:tn=1, loudnorm",
+        # "-ar", "44100", "-ac", "2",
         audio_path, "-y"
     ]
     subprocess.run(command, check=True)
     return audio_path
 
-# def ffmpef_clean_audio(input_path: str, output_path: str):
-#     """Clean audio using ffmpeg filters."""
-#     command = [
-#         "ffmpeg", "-y", "-i" input_path,
-#         "-af", "highpass=f=80, afftdn=nr=12:nf-50:tn=1, loudnorm",
-#         "-ac", "1", "-ar", "16000",
-#         output_path, "-y"
-#     ]
-#     subprocess.run(command, check=True)
 
 
-    
+# ---------------------------------------------------------------------------
+# Main transcription and diarization logic
+# ---------------------------------------------------------------------------
 def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
     """
     Run the full WhisperX pipeline:
@@ -140,28 +175,51 @@ def save_into_csv(segments, output_file):
             endf = format_timestamp(end)
             print(f"[{stf}] [{endf}] [{speaker}]: {text}")
             writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text})
-            
 
-
+def get_output_path(webm_path: Path, output_dir: str = "output") -> Path:
+    """Generates the expected CSV path for a given webm file."""
+    # This keeps the filename but puts it in the output folder
+    file_name = webm_path.stem + "_transcript.csv"
+    return Path(output_dir) / file_name
 
 
 def main():
     load_dotenv(override=True)
-
     hf_token = os.environ.get("HF_TOKEN")
     if not hf_token:
         print("Error: HF_TOKEN not set.")
         print("Create a .env file with: HF_TOKEN=your_token_here")
         return
 
-    video_path = "videosample1.webm"
-    audio_path = extract_audio(video_path)
-    segments = transcribe_and_diarize(audio_path, hf_token)
 
-    print("\n--- Transcription ---\n")
-    file_name = os.path.splitext(video_path)[0] + "_transcript.csv"
-    save_into_csv(segments, 'output.csv')
+    # Ensure output directory exists
+    output_base = Path("output")
+    ensure_dir(output_base)
 
+    all_files = find_webm_files(DATA_ROOT)
+    total_files = len(all_files)
+    
+    print(f"Found {total_files} files to process.")
+
+    # Process all .webm files in the data directory
+    for idx, webm in enumerate(all_files, 1):
+        output_csv = get_output_path(webm)
+
+        # Resume capability: skip if output already exists
+        if output_csv.exists():
+            print(f"[{idx}/{total_files}] Skipping: {webm.name} (Output already exists)")
+            continue
+
+        # Process the file
+        try:
+            print(f"\n[{idx}/{total_files}] Processing: {webm.name}")
+            audio_path = extract_audio_to_temp(webm)
+            result = transcribe_and_diarize(audio_path, hf_token)
+
+            save_into_csv(result, str(output_csv))
+            print(f"Successfully saved to {output_csv}")
+        except Exception as e:
+            print(f"processing failed for {webm}: {e}")
 
 
 if __name__ == "__main__":
