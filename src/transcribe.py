@@ -94,7 +94,7 @@ def extract_audio(video_path: str) -> str:
 # ---------------------------------------------------------------------------
 # Main transcription and diarization logic
 # ---------------------------------------------------------------------------
-def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
+def transcribe_and_diarize(audio_path: str, hf_token: str, model, align_model, metadata, diarize_model) -> list[dict]:
     """
     Run the full WhisperX pipeline:
       1. Transcribe with Whisper
@@ -103,35 +103,25 @@ def transcribe_and_diarize(audio_path: str, hf_token: str) -> list[dict]:
       4. Assign speaker labels to segments
     """
     device = "cpu"  # Safest default for Mac; change to "cuda" on GPU machines
-    compute_type = "int8"
-    batch_size = 16
-
+    
     # --- Step 1: Transcribe ---
     print("1. Transcribing audio...")
-    model = whisperx.load_model("large-v2", device, compute_type=compute_type)
     audio = whisperx.load_audio(audio_path)
-    result = model.transcribe(audio, batch_size=batch_size)
+    result = model.transcribe(audio, batch_size=16)
 
-    gc.collect()
 
     # --- Step 2: Align timestamps ---
     print("2. Aligning timestamps...")
-    align_model, metadata = whisperx.load_align_model(
-        language_code=result["language"], device=device
-    )
     result = whisperx.align(
         result["segments"], align_model, metadata, audio, device,
         return_char_alignments=False,
     )
 
-    gc.collect()
 
     # --- Step 3: Speaker diarization ---
     print("3. Performing speaker diarization...")
-    diarize_model = DiarizationPipeline(
-        use_auth_token=hf_token, device=device
-    )
-    diarize_segments = diarize_model(audio, min_speakers = 1, max_speakers = 2)
+
+    diarize_segments = diarize_model(audio, min_speakers = 2, max_speakers = 2)
 
     # --- Step 4: Assign speakers to segments ---
     result = whisperx.assign_word_speakers(diarize_segments, result)
@@ -190,12 +180,21 @@ def main():
         print("Error: HF_TOKEN not set.")
         print("Create a .env file with: HF_TOKEN=your_token_here")
         return
+    
+    compute_type = "int8"
+    batch_size = 16
+    device = 'cpu'
+    asr_options = {"beam_size" : 1, "patience": 1}
+    model = whisperx.load_model("turbo", device, compute_type=compute_type, asr_options = asr_options)
+    align_model, metadata = whisperx.load_align_model(language_code="en", device=device)
 
-
+    diarize_model = DiarizationPipeline(
+        use_auth_token=hf_token, device=device
+    )
     # Ensure output directory exists
     output_base = Path("output")
     ensure_dir(output_base)
-
+ 
     all_files = find_webm_files(DATA_ROOT)
     total_files = len(all_files)
     
@@ -214,7 +213,7 @@ def main():
         try:
             print(f"\n[{idx}/{total_files}] Processing: {webm.name}")
             audio_path = extract_audio_to_temp(webm)
-            result = transcribe_and_diarize(audio_path, hf_token)
+            result = transcribe_and_diarize(audio_path, hf_token, model, align_model, metadata, diarize_model)
 
             save_into_csv(result, str(output_csv))
             print(f"Successfully saved to {output_csv}")
