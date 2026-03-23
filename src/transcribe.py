@@ -16,8 +16,11 @@ import torch
 import whisperx
 from dotenv import load_dotenv
 from whisperx.diarize import DiarizationPipeline
-from datetime import timedelta
-from datetime import timedelta
+from datetime import timedelta, datetime
+import logging
+import sys
+import time
+import argparse
 
 import csv
 
@@ -73,7 +76,7 @@ def extract_audio_to_temp(webm_path: Path, temp_root: str = "data/temp", out_for
         "1",
         str(out_path),
     ]
-    subprocess.run(cmd, check=True)
+    subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     return out_path
 
 def extract_audio(video_path: str) -> str:
@@ -86,7 +89,7 @@ def extract_audio(video_path: str) -> str:
         # "-ar", "44100", "-ac", "2",
         audio_path, "-y"
     ]
-    subprocess.run(command, check=True)
+    subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
     return audio_path
 
 
@@ -94,7 +97,8 @@ def extract_audio(video_path: str) -> str:
 # ---------------------------------------------------------------------------
 # Main transcription and diarization logic
 # ---------------------------------------------------------------------------
-def transcribe_and_diarize(audio_path: str, hf_token: str, model, align_model, metadata, diarize_model) -> list[dict]:
+def transcribe_and_diarize(audio_path: str, hf_token: str, model, align_model, metadata, diarize_model,
+                           no_diarize: bool = False, no_align: bool = False) -> list[dict]:
     """
     Run the full WhisperX pipeline:
       1. Transcribe with Whisper
@@ -104,29 +108,36 @@ def transcribe_and_diarize(audio_path: str, hf_token: str, model, align_model, m
     """
     device = "cpu"  # Safest default for Mac; change to "cuda" on GPU machines
     
+    logger = logging.getLogger("transcribe")
     # --- Step 1: Transcribe ---
-    print("1. Transcribing audio...")
+    logger.info("1. Transcribing audio...")
     audio = whisperx.load_audio(audio_path)
     result = model.transcribe(audio, batch_size=16)
 
+    segments = result.get("segments", [])
 
     # --- Step 2: Align timestamps ---
-    print("2. Aligning timestamps...")
-    result = whisperx.align(
-        result["segments"], align_model, metadata, audio, device,
-        return_char_alignments=False,
-    )
-
+    if not no_align:
+        logger.info("2. Aligning timestamps...")
+        result = whisperx.align(
+            result["segments"], align_model, metadata, audio, device,
+            return_char_alignments=False,
+        )
+        segments = result.get("segments", [])
+    else:
+        logger.info("2. Skipping alignment (flag)")
 
     # --- Step 3: Speaker diarization ---
-    print("3. Performing speaker diarization...")
+    if not no_diarize:
+        logger.info("3. Performing speaker diarization...")
+        diarize_segments = diarize_model(audio, min_speakers = 2, max_speakers = 2)
+        # --- Step 4: Assign speakers to segments ---
+        result = whisperx.assign_word_speakers(diarize_segments, result)
+        segments = result.get("segments", [])
+    else:
+        logger.info("3. Skipping diarization (flag)")
 
-    diarize_segments = diarize_model(audio, min_speakers = 2, max_speakers = 2)
-
-    # --- Step 4: Assign speakers to segments ---
-    result = whisperx.assign_word_speakers(diarize_segments, result)
-
-    return result["segments"]
+    return segments
 
 
 def format_timestamp(seconds: float) -> str:
@@ -142,14 +153,16 @@ def format_timestamp(seconds: float) -> str:
 
 
 def print_output(segment):
+    logger = logging.getLogger("transcribe")
     for seg in segments:
         speaker = seg.get("speaker", "UNKNOWN")
         text = seg.get("text", "").strip()
         start = seg.get("start", seg.get("start_time", 0.0))
         ts = format_timestamp(start)
-        print(f"[{ts}] [{speaker}]: {text}")
+        logger.info(f"[{ts}] [{speaker}]: {text}")
 
 def save_into_csv(segments, output_file):
+    logger = logging.getLogger("transcribe")
     with open(output_file, 'w', newline='') as csvfile:
         fieldnames = ['start_time', 'end_time', 'speaker', 'text']
         writer = csv.DictWriter(csvfile, fieldnames = fieldnames)
@@ -163,7 +176,7 @@ def save_into_csv(segments, output_file):
             end = seg.get("end", seg.get("end_time", 0.0))
             stf = format_timestamp(start)
             endf = format_timestamp(end)
-            print(f"[{stf}] [{endf}] [{speaker}]: {text}")
+            logger.info(f"[{stf}] [{endf}] [{speaker}]: {text}")
             writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text})
 
 def get_output_path(webm_path: Path, output_dir: str = "output") -> Path:
@@ -191,14 +204,51 @@ def main():
     diarize_model = DiarizationPipeline(
         use_auth_token=hf_token, device=device
     )
+    parser = argparse.ArgumentParser(description="Transcribe .webm files with optional diarization/align")
+    parser.add_argument("--no-diarize", action="store_true", help="Skip speaker diarization")
+    parser.add_argument("--no-align", action="store_true", help="Skip timestamp alignment")
+    parser.add_argument("--input", "-i", help="Path to a single .webm file to process (overrides data root)")
+    parser.add_argument("--output-dir", "-o", default="output", help="Output directory for CSVs and logs")
+    parser.add_argument("--timestamped-log", action="store_true", help="Create a timestamped log file per run")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (DEBUG)")
+    args = parser.parse_args()
+
     # Ensure output directory exists
-    output_base = Path("output")
+    output_base = Path(args.output_dir)
     ensure_dir(output_base)
+
+    # Configure logging: suppress noisy libraries and log to console + file
+    # Set global minimum to WARNING to reduce third-party logs
+    logging.getLogger().setLevel(logging.WARNING)
+    for lib in ("transformers", "whisperx", "torch", "torchaudio", "pyannote", "ffmpeg"):
+        logging.getLogger(lib).setLevel(logging.WARNING)
+
+    logger = logging.getLogger("transcribe")
+    logger.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s: %(message)s", "%Y-%m-%d %H:%M:%S")
+    ch = logging.StreamHandler(sys.stdout)
+    ch.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
+
+    # File handler: fixed name or timestamped per run
+    if args.timestamped_log:
+        run_ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+        fh = logging.FileHandler(str(output_base / f"transcription_{run_ts}.log"), mode="a")
+    else:
+        fh = logging.FileHandler(str(output_base / "transcription.log"), mode="a")
+    fh.setLevel(logging.DEBUG if args.verbose else logging.INFO)
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
  
-    all_files = find_webm_files(DATA_ROOT)
+    # Determine files to process: single input or all found
+    if args.input:
+        all_files = [Path(args.input)]
+    else:
+        all_files = find_webm_files(DATA_ROOT)
     total_files = len(all_files)
     
-    print(f"Found {total_files} files to process.")
+    logger.info(f"Found {total_files} files to process.")
 
     # Process all .webm files in the data directory
     for idx, webm in enumerate(all_files, 1):
@@ -206,19 +256,21 @@ def main():
 
         # Resume capability: skip if output already exists
         if output_csv.exists():
-            print(f"[{idx}/{total_files}] Skipping: {webm.name} (Output already exists)")
+            logger.info(f"[{idx}/{total_files}] Skipping: {webm.name} (Output already exists)")
             continue
 
         # Process the file
         try:
-            print(f"\n[{idx}/{total_files}] Processing: {webm.name}")
+            logger.info(f"\n[{idx}/{total_files}] Processing: {webm.name}")
+            start_time = time.time()
             audio_path = extract_audio_to_temp(webm)
             result = transcribe_and_diarize(audio_path, hf_token, model, align_model, metadata, diarize_model)
 
             save_into_csv(result, str(output_csv))
-            print(f"Successfully saved to {output_csv}")
+            elapsed = time.time() - start_time
+            logger.info(f"[{idx}/{total_files}] Processed {webm.name} in {elapsed:.2f}s; saved to {output_csv}")
         except Exception as e:
-            print(f"processing failed for {webm}: {e}")
+            logger.exception(f"processing failed for {webm}: {e}")
 
 
 if __name__ == "__main__":
