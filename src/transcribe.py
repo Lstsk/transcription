@@ -21,7 +21,6 @@ import logging
 import sys
 import time
 import argparse
-
 import csv
 
 # ---------------------------------------------------------------------------
@@ -86,7 +85,6 @@ def extract_audio(video_path: str) -> str:
         "ffmpeg", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le",
         "-af", "highpass=f=80, afftdn=nr=12:nf=-50:tn=1, loudnorm",
-        # "-ar", "44100", "-ac", "2",
         audio_path, "-y"
     ]
     subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.STDOUT)
@@ -154,7 +152,7 @@ def format_timestamp(seconds: float) -> str:
 
 def print_output(segment):
     logger = logging.getLogger("transcribe")
-    for seg in segments:
+    for seg in segments:  # Note: segments variable needs to be accessible here if used
         speaker = seg.get("speaker", "UNKNOWN")
         text = seg.get("text", "").strip()
         start = seg.get("start", seg.get("start_time", 0.0))
@@ -194,16 +192,7 @@ def main():
         print("Create a .env file with: HF_TOKEN=your_token_here")
         return
     
-    compute_type = "int8"
-    batch_size = 16
-    device = 'cpu'
-    asr_options = {"beam_size" : 1, "patience": 1}
-    model = whisperx.load_model("turbo", device, compute_type=compute_type, asr_options = asr_options)
-    align_model, metadata = whisperx.load_align_model(language_code="en", device=device)
-
-    diarize_model = DiarizationPipeline(
-        use_auth_token=hf_token, device=device
-    )
+    # 1. Parse arguments FIRST
     parser = argparse.ArgumentParser(description="Transcribe .webm files with optional diarization/align")
     parser.add_argument("--no-diarize", action="store_true", help="Skip speaker diarization")
     parser.add_argument("--no-align", action="store_true", help="Skip timestamp alignment")
@@ -213,12 +202,31 @@ def main():
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (DEBUG)")
     args = parser.parse_args()
 
-    # Ensure output directory exists
+    # Ensure output directory exists immediately after parsing args
     output_base = Path(args.output_dir)
     ensure_dir(output_base)
 
+    # 2. Setup devices
+    compute_type = "int8"
+    batch_size = 16
+    device = 'cpu'
+    asr_options = {"beam_size" : 1, "patience": 1}
+    
+    # 3. Load base models
+    model = whisperx.load_model("large-v2", device, compute_type=compute_type, asr_options = asr_options)
+    
+    if not args.no_align:
+        align_model, metadata = whisperx.load_align_model(language_code="en", device=device)
+    else:
+        align_model, metadata = None, None
+
+    # 4. Conditionally load PyAnnote ONLY if we need it
+    if not args.no_diarize:
+        diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
+    else:
+        diarize_model = None
+
     # Configure logging: suppress noisy libraries and log to console + file
-    # Set global minimum to WARNING to reduce third-party logs
     logging.getLogger().setLevel(logging.WARNING)
     for lib in ("transformers", "whisperx", "torch", "torchaudio", "pyannote", "ffmpeg"):
         logging.getLogger(lib).setLevel(logging.WARNING)
@@ -252,7 +260,8 @@ def main():
 
     # Process all .webm files in the data directory
     for idx, webm in enumerate(all_files, 1):
-        output_csv = get_output_path(webm)
+        # Pass the output directory to get_output_path
+        output_csv = get_output_path(webm, args.output_dir)
 
         # Resume capability: skip if output already exists
         if output_csv.exists():
@@ -264,8 +273,17 @@ def main():
             logger.info(f"\n[{idx}/{total_files}] Processing: {webm.name}")
             start_time = time.time()
             audio_path = extract_audio_to_temp(webm)
-            result = transcribe_and_diarize(audio_path, hf_token, model, align_model, metadata, diarize_model)
-
+            result = transcribe_and_diarize(
+                audio_path=audio_path, 
+                hf_token=hf_token, 
+                model=model, 
+                align_model=align_model, 
+                metadata=metadata, 
+                diarize_model=diarize_model,
+                no_diarize=args.no_diarize,  
+                no_align=args.no_align      
+            )
+            
             save_into_csv(result, str(output_csv))
             elapsed = time.time() - start_time
             logger.info(f"[{idx}/{total_files}] Processed {webm.name} in {elapsed:.2f}s; saved to {output_csv}")
