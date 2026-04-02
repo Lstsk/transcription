@@ -162,7 +162,7 @@ def print_output(segment):
 def save_into_csv(segments, output_file):
     logger = logging.getLogger("transcribe")
     with open(output_file, 'w', newline='') as csvfile:
-        fieldnames = ['start_time', 'end_time', 'speaker', 'text']
+        fieldnames = ['start_time', 'end_time', 'speaker', 'text', 'confidence']
         writer = csv.DictWriter(csvfile, fieldnames = fieldnames)
 
         writer.writeheader()
@@ -175,7 +175,12 @@ def save_into_csv(segments, output_file):
             stf = format_timestamp(start)
             endf = format_timestamp(end)
             logger.info(f"[{stf}] [{endf}] [{speaker}]: {text}")
-            writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text})
+            avg_prob = seg.get("avg_logprob", None)
+            if avg_prob is not None: 
+                confidence = round(math.exp(avg_prob), 3)
+            else: 
+                confidence = ""
+            writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text, "confidence": confidence})
 
 def get_output_path(webm_path: Path, output_dir: str = "output") -> Path:
     """Generates the expected CSV path for a given webm file."""
@@ -273,18 +278,23 @@ def main():
             logger.info(f"\n[{idx}/{total_files}] Processing: {webm.name}")
             start_time = time.time()
             audio_path = extract_audio_to_temp(webm)
-            result = transcribe_and_diarize(
-                audio_path=audio_path, 
-                hf_token=hf_token, 
-                model=model, 
-                align_model=align_model, 
-                metadata=metadata, 
-                diarize_model=diarize_model,
-                no_diarize=args.no_diarize,  
-                no_align=args.no_align      
-            )
+            try:
+                result = transcribe_and_diarize(
+                    audio_path=audio_path, 
+                    hf_token=hf_token, 
+                    model=model, 
+                    align_model=align_model, 
+                    metadata=metadata, 
+                    diarize_model=diarize_model,
+                    no_diarize=args.no_diarize,  
+                    no_align=args.no_align      
+                )
+                save_into_csv(result, str(output_csv))
+            finally:
+                if os.path.exists(audio_path):
+                    os.remove(audio_path)
             
-            save_into_csv(result, str(output_csv))
+            
             elapsed = time.time() - start_time
             logger.info(f"[{idx}/{total_files}] Processed {webm.name} in {elapsed:.2f}s; saved to {output_csv}")
         except Exception as e:
