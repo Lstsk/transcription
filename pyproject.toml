@@ -3,8 +3,10 @@ name = "whisper-transcription"
 version = "0.1.0"
 description = "Offline video transcription with speaker diarization"
 readme = "README.md"
-requires-python = ">=3.9, <3.13"
+requires-python = ">=3.11, <3.13"
 dependencies = [
+    "openai-whisper>=20250625",
     "python-dotenv>=1.2.1",
+    "whisper-mps>=0.0.10",
     "whisperx>=3.7.5",
 ]
