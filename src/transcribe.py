@@ -11,6 +11,9 @@ import gc
 from pathlib import Path
 import subprocess
 import warnings
+import math
+import wave
+import contextlib
 
 import torch
 import whisperx
@@ -182,6 +185,26 @@ def save_into_csv(segments, output_file):
                 confidence = ""
             writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text, "confidence": confidence})
 
+
+
+def append_processing_log(output_dir: Path, file_name: str, transcribed: bool, diarized: bool, transcribe_time_sec: float):
+    """Append a summary line to processing_log.csv in the given output dir."""
+    try:
+        ensure_dir(output_dir)
+        log_path = output_dir / "processing_log.csv"
+        header = ['file_name', 'transcribed', 'diarized', 'transcribe_time_sec', 'timestamp']
+        write_header = not log_path.exists()
+        minutes, seconds = divmod(transcribe_time_sec, 60)
+        with open(log_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            if write_header:
+                writer.writerow(header)
+            ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            writer.writerow([file_name, str(transcribed), str(diarized),  f"{minutes:.0f}:{seconds:.0f}", ts])
+    except Exception as e:
+        logging.getLogger('transcribe').warning(f"Failed to write processing log: {e}")
+
+
 def get_output_path(webm_path: Path, output_dir: str = "output") -> Path:
     """Generates the expected CSV path for a given webm file."""
     # This keeps the filename but puts it in the output folder
@@ -227,7 +250,7 @@ def main():
 
     # 4. Conditionally load PyAnnote ONLY if we need it
     if not args.no_diarize:
-        diarize_model = DiarizationPipeline(use_auth_token=hf_token, device=device)
+        diarize_model = DiarizationPipeline(device=device)
     else:
         diarize_model = None
 
@@ -296,6 +319,13 @@ def main():
             
             
             elapsed = time.time() - start_time
+            # Append a short per-file processing summary to processing_log.csv
+            try:
+                append_processing_log(output_base, webm.name, transcribed=True, diarized=(not args.no_diarize), transcribe_time_sec=elapsed)
+
+            except Exception:
+                logger.warning(f"Failed to write processing logs for {webm.name}")
+
             logger.info(f"[{idx}/{total_files}] Processed {webm.name} in {elapsed:.2f}s; saved to {output_csv}")
         except Exception as e:
             logger.exception(f"processing failed for {webm}: {e}")
