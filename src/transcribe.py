@@ -165,7 +165,7 @@ def print_output(segment):
 def save_into_csv(segments, output_file):
     logger = logging.getLogger("transcribe")
     with open(output_file, 'w', newline='') as csvfile:
-        fieldnames = ['start_time', 'end_time', 'speaker', 'text', 'confidence']
+        fieldnames = ['start_time', 'end_time', 'speaker', 'text']
         writer = csv.DictWriter(csvfile, fieldnames = fieldnames)
 
         writer.writeheader()
@@ -178,12 +178,8 @@ def save_into_csv(segments, output_file):
             stf = format_timestamp(start)
             endf = format_timestamp(end)
             logger.info(f"[{stf}] [{endf}] [{speaker}]: {text}")
-            avg_prob = seg.get("avg_logprob", None)
-            if avg_prob is not None: 
-                confidence = round(math.exp(avg_prob), 3)
-            else: 
-                confidence = ""
-            writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text, "confidence": confidence})
+
+            writer.writerow({'start_time': stf, 'end_time': endf,"speaker": speaker, "text": text})
 
 
 
