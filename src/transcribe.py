@@ -56,6 +56,21 @@ def find_webm_files(base_dir: str) -> List[Path]:
     return list(base.rglob("*.webm"))
 
 
+def build_allowlist(list_path: str) -> set[str]:
+    """Read a list of video IDs and return normalized stem names to keep."""
+    with open(list_path, "r", encoding="utf-8") as f:
+        return {
+            line.strip().lower()
+            for line in f
+            if line.strip() and not line.strip().startswith("#")
+        }
+
+
+def filter_files_by_allowlist(files: list[Path], list_path: str) -> list[Path]:
+    allowed_stems = build_allowlist(list_path)
+    return [p for p in files if p.stem.strip().lower() in allowed_stems]
+
+
 def ensure_dir(path: Path) -> None:
     path.mkdir(parents=True, exist_ok=True)
 
@@ -64,7 +79,9 @@ def extract_audio_to_temp(webm_path: Path, temp_root: str = "data/temp", out_for
     webm_path = Path(webm_path)
     temp_dir = Path(temp_root)
     ensure_dir(temp_dir)
-    out_name = webm_path.stem + "." + out_format
+    # Use relative path signature to avoid collisions when stems repeat in subfolders.
+    rel_sig = "_".join(webm_path.parts).replace(" ", "_")
+    out_name = rel_sig + "." + out_format
     out_path = temp_dir / out_name
 
     cmd = [
@@ -203,7 +220,6 @@ def append_processing_log(output_dir: Path, file_name: str, transcribed: bool, d
 
 def get_output_path(webm_path: Path, output_dir: str = "output") -> Path:
     """Generates the expected CSV path for a given webm file."""
-    # This keeps the filename but puts it in the output folder
     file_name = webm_path.stem + "_transcript.csv"
     return Path(output_dir) / file_name
 
@@ -221,10 +237,17 @@ def main():
     parser.add_argument("--no-diarize", action="store_true", help="Skip speaker diarization")
     parser.add_argument("--no-align", action="store_true", help="Skip timestamp alignment")
     parser.add_argument("--input", "-i", help="Path to a single .webm file to process (overrides data root)")
+    parser.add_argument("--input-list", help="Path to a text file listing .webm filenames/paths to process")
+    parser.add_argument("--max-files", type=int, help="Optional cap on number of matched files to process")
     parser.add_argument("--output-dir", "-o", default="output", help="Output directory for CSVs and logs")
     parser.add_argument("--timestamped-log", action="store_true", help="Create a timestamped log file per run")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose logging (DEBUG)")
     args = parser.parse_args()
+
+    if args.input and args.input_list:
+        parser.error("Use either --input or --input-list, not both.")
+    if args.max_files is not None and args.max_files <= 0:
+        parser.error("--max-files must be a positive integer.")
 
     # Ensure output directory exists immediately after parsing args
     output_base = Path(args.output_dir)
@@ -236,7 +259,7 @@ def main():
     device = 'cpu'
     asr_options = {"beam_size" : 1, "patience": 1}
     
-    # 3. Load base models
+    # 3. Load models
     model = whisperx.load_model("large-v2", device, compute_type=compute_type, asr_options = asr_options)
     
     if not args.no_align:
@@ -276,8 +299,14 @@ def main():
     # Determine files to process: single input or all found
     if args.input:
         all_files = [Path(args.input)]
+    elif args.input_list:
+        discovered_files = find_webm_files(DATA_ROOT)
+        all_files = filter_files_by_allowlist(discovered_files, args.input_list)
     else:
         all_files = find_webm_files(DATA_ROOT)
+    all_files = sorted(all_files)
+    if args.max_files is not None:
+        all_files = all_files[: args.max_files]
     total_files = len(all_files)
     
     logger.info(f"Found {total_files} files to process.")
@@ -324,6 +353,11 @@ def main():
 
             logger.info(f"[{idx}/{total_files}] Processed {webm.name} in {elapsed:.2f}s; saved to {output_csv}")
         except Exception as e:
+            elapsed = time.time() - start_time if 'start_time' in locals() else 0.0
+            try:
+                append_processing_log(output_base, webm.name, transcribed=False, diarized=(not args.no_diarize), transcribe_time_sec=elapsed)
+            except Exception:
+                logger.warning(f"Failed to write processing logs for {webm.name}")
             logger.exception(f"processing failed for {webm}: {e}")
 
 
