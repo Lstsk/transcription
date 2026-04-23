@@ -56,19 +56,31 @@ def find_webm_files(base_dir: str) -> List[Path]:
     return list(base.rglob("*.webm"))
 
 
-def build_allowlist(list_path: str) -> set[str]:
-    """Read a list of video IDs and return normalized stem names to keep."""
+def build_stem_set(list_path: str) -> set[str]:
+    """Read a list of IDs/filenames/paths and return normalized stems."""
     with open(list_path, "r", encoding="utf-8") as f:
-        return {
-            line.strip().lower()
-            for line in f
-            if line.strip() and not line.strip().startswith("#")
-        }
+        normalized = set()
+        for line in f:
+            raw = line.strip()
+            if not raw or raw.startswith("#"):
+                continue
+
+            # Accept bare IDs, filenames, or full paths. We compare by stem.
+            token = Path(raw).name.strip().lower()
+            if token.endswith(".webm"):
+                token = Path(token).stem
+            normalized.add(token)
+        return normalized
 
 
 def filter_files_by_allowlist(files: list[Path], list_path: str) -> list[Path]:
-    allowed_stems = build_allowlist(list_path)
+    allowed_stems = build_stem_set(list_path)
     return [p for p in files if p.stem.strip().lower() in allowed_stems]
+
+
+def filter_files_by_excludelist(files: list[Path], list_path: str) -> list[Path]:
+    excluded_stems = build_stem_set(list_path)
+    return [p for p in files if p.stem.strip().lower() not in excluded_stems]
 
 
 def ensure_dir(path: Path) -> None:
@@ -86,6 +98,7 @@ def extract_audio_to_temp(webm_path: Path, temp_root: str = "data/temp", out_for
 
     cmd = [
         "ffmpeg",
+        "-nostdin",
         "-y",
         "-i",
         str(webm_path),
@@ -102,7 +115,7 @@ def extract_audio(video_path: str) -> str:
     """Extract audio from a video file using ffmpeg and save as WAV."""
     audio_path = os.path.splitext(video_path)[0] + ".wav"
     command = [
-        "ffmpeg", "-i", video_path,
+        "ffmpeg", "-nostdin", "-i", video_path,
         "-vn", "-acodec", "pcm_s16le",
         "-af", "highpass=f=80, afftdn=nr=12:nf=-50:tn=1, loudnorm",
         audio_path, "-y"
@@ -237,7 +250,8 @@ def main():
     parser.add_argument("--no-diarize", action="store_true", help="Skip speaker diarization")
     parser.add_argument("--no-align", action="store_true", help="Skip timestamp alignment")
     parser.add_argument("--input", "-i", help="Path to a single .webm file to process (overrides data root)")
-    parser.add_argument("--input-list", help="Path to a text file listing .webm filenames/paths to process")
+    parser.add_argument("--input-list", help="Path to a text file listing .webm filenames/IDs to process")
+    parser.add_argument("--exclude-list", help="Path to a text file listing .webm filenames/IDs to skip")
     parser.add_argument("--max-files", type=int, help="Optional cap on number of matched files to process")
     parser.add_argument("--output-dir", "-o", default="output", help="Output directory for CSVs and logs")
     parser.add_argument("--timestamped-log", action="store_true", help="Create a timestamped log file per run")
@@ -246,6 +260,8 @@ def main():
 
     if args.input and args.input_list:
         parser.error("Use either --input or --input-list, not both.")
+    if args.input and args.exclude_list:
+        parser.error("--exclude-list cannot be used with --input.")
     if args.max_files is not None and args.max_files <= 0:
         parser.error("--max-files must be a positive integer.")
 
@@ -299,11 +315,13 @@ def main():
     # Determine files to process: single input or all found
     if args.input:
         all_files = [Path(args.input)]
-    elif args.input_list:
-        discovered_files = find_webm_files(DATA_ROOT)
-        all_files = filter_files_by_allowlist(discovered_files, args.input_list)
     else:
-        all_files = find_webm_files(DATA_ROOT)
+        discovered_files = find_webm_files(DATA_ROOT)
+        all_files = discovered_files
+        if args.input_list:
+            all_files = filter_files_by_allowlist(all_files, args.input_list)
+        if args.exclude_list:
+            all_files = filter_files_by_excludelist(all_files, args.exclude_list)
     all_files = sorted(all_files)
     if args.max_files is not None:
         all_files = all_files[: args.max_files]

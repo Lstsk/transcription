@@ -6,7 +6,7 @@
 
 
 Overnight running command:
-nohup uv run transcribe.py --input-list selected_videos.txt --output-dir output --timestamped-log > output/overnight_stdout.log 2>&1 &
+nohup uv run src/transcribe.py --input-list data/selected_videos.txt --output-dir output --timestamped-log > output/overnight_stdout.log 2>&1 &
 
 Running with a selected input:
 uv run src/transcribe.py --input-list data/selected_videos.txt
