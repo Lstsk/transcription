@@ -10,3 +10,6 @@ nohup uv run src/transcribe.py --input-list data/selected_videos.txt --output-di
 
 Running with a selected input:
 uv run src/transcribe.py --input-list data/selected_videos.txt
+
+
+nohup uv run src/transcribe.py --output-dir output/helping-1 --timestamped-log > output/helping-1/overnight_stdout.log 2>&1 &

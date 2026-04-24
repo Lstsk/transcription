@@ -29,7 +29,7 @@ import csv
 # ---------------------------------------------------------------------------
 # Constants 
 # ---------------------------------------------------------------------------
-DATA_ROOT = "data"
+DATA_ROOT = "data/"
 
 
 # ---------------------------------------------------------------------------
@@ -53,7 +53,11 @@ torch.load = _patched_torch_load
 # ---------------------------------------------------------------------------
 def find_webm_files(base_dir: str) -> List[Path]:    
     base = Path(base_dir)
-    return list(base.rglob("*.webm"))
+    exts = [".webm", ".WEBM", ".WebM", ".mp4", ".MP4", ".Mp4"]
+    files = []
+    for ext in exts:
+        files.extend(base.rglob(f"*{ext}"))
+    return files
 
 
 def build_stem_set(list_path: str) -> set[str]:
@@ -232,9 +236,19 @@ def append_processing_log(output_dir: Path, file_name: str, transcribed: bool, d
 
 
 def get_output_path(webm_path: Path, output_dir: str = "output") -> Path:
-    """Generates the expected CSV path for a given webm file."""
-    file_name = webm_path.stem + "_transcript.csv"
-    return Path(output_dir) / file_name
+    """Generates the expected CSV path for a given video file, preserving subfolder structure under output_dir."""
+    # Compute relative path from DATA_ROOT
+    try:
+        rel_path = webm_path.relative_to(Path(DATA_ROOT))
+    except Exception:
+        rel_path = webm_path.name  # fallback: just the file name
+    # Replace extension with _transcript.csv
+    if isinstance(rel_path, Path):
+        rel_dir = rel_path.parent
+        file_name = rel_path.stem + "_transcript.csv"
+        return Path(output_dir) / rel_dir / file_name
+    else:
+        return Path(output_dir) / (Path(webm_path).stem + "_transcript.csv")
 
 
 def main():
