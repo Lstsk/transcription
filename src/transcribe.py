@@ -56,7 +56,12 @@ def find_webm_files(base_dir: str) -> List[Path]:
     exts = [".webm", ".WEBM", ".WebM", ".mp4", ".MP4", ".Mp4"]
     files = []
     for ext in exts:
-        files.extend(base.rglob(f"*{ext}"))
+        for p in base.rglob(f"*{ext}"):
+            if p.name.startswith("._"):
+                continue
+            if p.name.startswith("."):
+                continue
+            files.append(p)
     return files
 
 
@@ -165,7 +170,7 @@ def transcribe_and_diarize(audio_path: str, hf_token: str, model, align_model, m
     # --- Step 3: Speaker diarization ---
     if not no_diarize:
         logger.info("3. Performing speaker diarization...")
-        diarize_segments = diarize_model(audio, min_speakers = 2, max_speakers = 2)
+        diarize_segments = diarize_model(audio, min_speakers = 2, max_speakers = 3)
         # --- Step 4: Assign speakers to segments ---
         result = whisperx.assign_word_speakers(diarize_segments, result)
         segments = result.get("segments", [])
@@ -187,7 +192,7 @@ def format_timestamp(seconds: float) -> str:
     return f"{str(td)}.{ms:03d}"
 
 
-def print_output(segment):
+def print_output(segments):
     logger = logging.getLogger("transcribe")
     for seg in segments:  # Note: segments variable needs to be accessible here if used
         speaker = seg.get("speaker", "UNKNOWN")
@@ -198,6 +203,7 @@ def print_output(segment):
 
 def save_into_csv(segments, output_file):
     logger = logging.getLogger("transcribe")
+    Path(output_file).parent.mkdir(parents=True, exist_ok=True)
     with open(output_file, 'w', newline='') as csvfile:
         fieldnames = ['start_time', 'end_time', 'speaker', 'text']
         writer = csv.DictWriter(csvfile, fieldnames = fieldnames)
@@ -369,6 +375,7 @@ def main():
                     no_diarize=args.no_diarize,  
                     no_align=args.no_align      
                 )
+                ensure_dir(output_csv.parent)
                 save_into_csv(result, str(output_csv))
             finally:
                 if os.path.exists(audio_path):
